@@ -13,12 +13,15 @@
 #   HEAD_BRANCH   — имя source-ветки (только для отчёта)
 #   REMOTE        — имя remote (по умолчанию origin)
 #   REPORT_FILE   — куда писать markdown-отчёт
+#   FETCH         — true: перед проверкой догрузить из REMOTE нижестоящие ветки
+#                   и HEAD_SHA (для CI, где сделан неглубокий checkout)
 #   GITHUB_OUTPUT — (необязательно) сюда пишется has_conflicts=true|false
 set -euo pipefail
 
 BRANCH_CHAIN=${BRANCH_CHAIN:-"release devel integra"}
 REMOTE=${REMOTE:-origin}
 REPORT_FILE=${REPORT_FILE:-downstream-merge-report.md}
+FETCH=${FETCH:-false}
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${HEAD_SHA:?HEAD_SHA is required}"
 HEAD_BRANCH=${HEAD_BRANCH:-$HEAD_SHA}
@@ -41,6 +44,18 @@ if ! $found || [[ ${#downstream[@]} -eq 0 ]]; then
   : > "$REPORT_FILE"
   set_output has_conflicts=false
   exit 0
+fi
+
+# Догружаем только нужное: нижестоящие ветки и source-ветку, с полной историей
+# коммитов (без неё merge-base будет неверным), но без содержимого файлов.
+# Файлы merge-tree подкачает сам — лишь те, что изменены с обеих сторон.
+# Не используем --depth: обрезанная история даёт неверный merge-base.
+if [[ $FETCH == true ]]; then
+  refspecs=()
+  for target in "${downstream[@]}"; do
+    refspecs+=("+refs/heads/$target:refs/remotes/$REMOTE/$target")
+  done
+  git fetch --no-tags --filter=blob:none "$REMOTE" "${refspecs[@]}" "$HEAD_SHA"
 fi
 
 has_conflicts=false
