@@ -2,7 +2,8 @@ name: Downstream merge check
 
 # PR в release -> проверяем, что source-ветка PR смержится в devel и integra.
 # PR в devel   -> проверяем, что source-ветка PR смержится в integra.
-# Только предупреждает: job всегда зелёный, мерж не блокируется.
+# При конфликте job падает (красный крестик). Мерж блокируется, только если
+# проверка отмечена как обязательная в branch protection.
 on:
   pull_request:
     branches: [release, devel]
@@ -61,3 +62,9 @@ jobs:
           elif [[ -n $existing ]]; then
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$existing"
           fi
+
+      - name: Fail on conflicts
+        if: steps.check.outputs.has_conflicts == 'true'
+        run: |
+          echo "::error::Source-ветка не смержится в нижестоящие ветки без конфликтов, см. отчёт в Job summary"
+          exit 1
