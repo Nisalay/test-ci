@@ -1,0 +1,63 @@
+name: Downstream merge check
+
+# PR в release -> проверяем, что зальётся в devel и integra.
+# PR в devel   -> проверяем, что зальётся в integra.
+# Только предупреждает: job всегда зелёный, мерж не блокируется.
+on:
+  pull_request:
+    branches: [release, devel]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: downstream-merge-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  BRANCH_CHAIN: "release devel integra"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # нужна полная история для поиска merge-base
+
+      - name: Simulate cascade merge
+        id: check
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          # Для pull_request github.sha = refs/pull/N/merge, т.е. base с уже влитым PR
+          PR_SHA: ${{ github.sha }}
+          REPORT_FILE: ${{ runner.temp }}/report.md
+        run: bash .github/scripts/check-downstream-merge.sh
+
+      - name: Job summary
+        if: always() && steps.check.outcome == 'success'
+        run: cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Один "липкий" комментарий: создаётся при конфликте, обновляется при
+      # новых пушах и удаляется, когда конфликтов больше нет.
+      - name: PR comment
+        if: steps.check.outcome == 'success'
+        continue-on-error: true # у PR из форков токен read-only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HAS_CONFLICTS: ${{ steps.check.outputs.has_conflicts }}
+        run: |
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- downstream-merge-check -->")) | .id' | head -1)
+          if [[ $HAS_CONFLICTS == true ]]; then
+            if [[ -n $existing ]]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@"$RUNNER_TEMP/report.md"
+            else
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/report.md"
+            fi
+          elif [[ -n $existing ]]; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$existing"
+          fi
